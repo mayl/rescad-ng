@@ -5,7 +5,7 @@ Vader Systems), the little Windows freeware tool for finding standard (E-series)
 
 It is a single self-contained executable. There's nothing to install: download it and double-click it.
 It opens in a fraction of a second and recalculates as you type. The same calculators also run in a web
-browser, compiled to WebAssembly.
+browser, compiled to WebAssembly: **[try it online](https://mayl.github.io/rescad-ng/)**.
 
 ## What it does
 
@@ -85,6 +85,9 @@ decimal point, as on resistor markings.
 WebAssembly. It runs entirely in the browser: about 480 KB of WASM, 170 KB gzipped, with no server
 logic. It has the same tabs, keyboard shortcuts and copy-to-spreadsheet behaviour, and the layout
 adapts to phones.
+
+It is published at **https://mayl.github.io/rescad-ng/** by `.github/workflows/pages.yml`, which
+builds `.#web` with Nix on every push to `main`.
 
 ```sh
 nix run .#serve-web                   # build the site and serve it on http://127.0.0.1:8080/
