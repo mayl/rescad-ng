@@ -1,0 +1,7 @@
+[package]
+name = "rescad-core"
+version = "1.0.0"
+description = "Resistor calculations behind ResCAD NG: E-series, pairs, networks, dividers and trimmer circuits"
+edition = "2024"
+
+[dependencies]

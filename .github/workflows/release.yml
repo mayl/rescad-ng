@@ -16,7 +16,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-zigbuild (bundles zig)
         run: pip install cargo-zigbuild
-      - run: cargo test --release
+      - run: cargo test --release --workspace --exclude rescad-web
       - name: Build (glibc 2.17 baseline)
         run: cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17
       - run: cp target/x86_64-unknown-linux-gnu/release/rescad-ng rescad-ng-linux-x86_64

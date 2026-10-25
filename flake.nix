@@ -18,6 +18,25 @@
           overlays = [ rust-overlay.overlays.default ];
         }));
 
+      # The wasm-bindgen CLI must match the wasm-bindgen crate in Cargo.lock
+      # exactly, so build that version rather than whatever nixpkgs has.
+      wasmBindgenCli = pkgs:
+        let
+          src = pkgs.fetchCrate {
+            pname = "wasm-bindgen-cli";
+            version = "0.2.129";
+            hash = "sha256-pcecKQd7E8Opw6bkFoE569epUi7gh5qpQF1e5PJY6V8=";
+          };
+        in
+        pkgs.buildWasmBindgenCli {
+          inherit src;
+          cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+            inherit src;
+            inherit (src) pname version;
+            hash = "sha256-vmUrWVU7kPJJxO5qIVeAkwQyWDELO1Z4Z5gitz2kco8=";
+          };
+        };
+
       # Libraries the GUI loads at runtime via dlopen.  The package bakes them
       # into the binary's RPATH; the dev shell puts them on LD_LIBRARY_PATH.
       runtimeLibs = pkgs: with pkgs; [
@@ -39,6 +58,19 @@
             rustc = toolchain;
           };
           cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+          # The whole workspace: Cargo needs every member's manifest and sources.
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./Cargo.toml
+              ./Cargo.lock
+              ./build.rs
+              ./src
+              ./core
+              ./web
+              ./nix
+            ];
+          };
           desktopItem = pkgs.makeDesktopItem {
             name = "rescad-ng";
             desktopName = "ResCAD NG";
@@ -54,17 +86,9 @@
             pname = "rescad-ng";
             version = cargoToml.package.version;
 
-            src = pkgs.lib.fileset.toSource {
-              root = ./.;
-              fileset = pkgs.lib.fileset.unions [
-                ./Cargo.toml
-                ./Cargo.lock
-                ./build.rs
-                ./src
-                ./nix
-              ];
-            };
+            inherit src;
             cargoLock.lockFile = ./Cargo.lock;
+            cargoTestFlags = [ "--workspace" "--exclude" "rescad-web" ];
 
             nativeBuildInputs = [ pkgs.imagemagick pkgs.copyDesktopItems ];
             desktopItems = [ desktopItem ];
@@ -89,9 +113,55 @@
               platforms = systems;
             };
           };
+
+          # The browser version: a static site (index.html, JS, WASM, CSS) to
+          # serve from anywhere, e.g. `nix run .#serve-web` or GitHub Pages.
+          web =
+            let
+              wasmToolchain = pkgs.rust-bin.stable.latest.minimal.override {
+                targets = [ "wasm32-unknown-unknown" ];
+              };
+              wasmPlatform = pkgs.makeRustPlatform {
+                cargo = wasmToolchain;
+                rustc = wasmToolchain;
+              };
+            in
+            wasmPlatform.buildRustPackage {
+              pname = "rescad-web";
+              version = cargoToml.package.version;
+              inherit src;
+              cargoLock.lockFile = ./Cargo.lock;
+              nativeBuildInputs = [ pkgs.trunk pkgs.binaryen (wasmBindgenCli pkgs) ];
+              buildPhase = ''
+                runHook preBuild
+                export HOME=$TMPDIR
+                cd web
+                trunk build --release --offline --dist $TMPDIR/site
+                cd ..
+                runHook postBuild
+              '';
+              installPhase = ''
+                runHook preInstall
+                cp -r $TMPDIR/site $out
+                runHook postInstall
+              '';
+              doCheck = false;
+              meta.description = "ResCAD NG for the browser (static site)";
+            };
+
+          # Serve the web version locally and print its address.
+          serve-web = pkgs.writeShellApplication {
+            name = "rescad-serve-web";
+            runtimeInputs = [ pkgs.python3 ];
+            text = ''
+              port=''${1:-8080}
+              echo "ResCAD NG: http://127.0.0.1:$port/"
+              exec python3 -m http.server "$port" --bind 127.0.0.1 --directory ${web}
+            '';
+          };
         in
         {
-          inherit rescad-ng;
+          inherit rescad-ng web serve-web;
           default = rescad-ng;
         }
         // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
@@ -120,7 +190,7 @@
           };
           rust = pkgs.rust-bin.stable.latest.default.override {
             extensions = [ "rust-src" "clippy" "rustfmt" ];
-            targets = [ "x86_64-unknown-linux-gnu" ];
+            targets = [ "x86_64-unknown-linux-gnu" "wasm32-unknown-unknown" ];
           };
         in
         pkgs.mkShell {
@@ -130,6 +200,10 @@
             # link against an old glibc (2.17); Windows builds via .#windows.
             pkgs.zig
             pkgs.cargo-zigbuild
+            # The web version: `cd web && trunk serve`.
+            pkgs.trunk
+            pkgs.binaryen
+            (wasmBindgenCli pkgs)
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (runtimeLibs pkgs);
         };

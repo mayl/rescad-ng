@@ -2,11 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod calc;
-mod colour_code;
-mod eseries;
 mod icon;
-mod units;
 
 use eframe::egui;
 

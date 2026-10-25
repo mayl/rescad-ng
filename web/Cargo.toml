@@ -1,0 +1,24 @@
+[package]
+name = "rescad-web"
+version = "1.0.0"
+description = "ResCAD NG in the browser: a Leptos front end compiled to WebAssembly"
+edition = "2024"
+
+[dependencies]
+rescad-core = { path = "../core" }
+leptos = { version = "0.8", features = ["csr"] }
+console_error_panic_hook = "0.1"
+# The wasm-bindgen CLI in the flake must match the version in Cargo.lock exactly.
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "Clipboard",
+    "Document",
+    "Element",
+    "HtmlInputElement",
+    "KeyboardEvent",
+    "Navigator",
+    "ScrollIntoViewOptions",
+    "ScrollLogicalPosition",
+    "Selection",
+    "Window",
+] }

@@ -5,10 +5,11 @@ use eframe::egui::{
     TextEdit, Vec2,
 };
 
-use crate::calc::{self, DividerError, Kind, Row};
-use crate::colour_code;
-use crate::eseries::SeriesMask;
-use crate::units;
+use rescad_core::calc::{self, Row};
+use rescad_core::colour_code;
+use rescad_core::eseries::SeriesMask;
+use rescad_core::table::{self, Mode, Params};
+use rescad_core::units;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Tab {
@@ -52,21 +53,6 @@ const SERIES_KEYS: [(SeriesMask, Key, &str); 6] = [
     (SeriesMask::E192, Key::Num2, "Alt+2"),
 ];
 
-/// Everything the results depend on; results are recomputed only when this changes.
-#[derive(Clone, PartialEq)]
-struct Inputs {
-    tab: Tab,
-    value: String,
-    ratio_num: String,
-    ratio_den: String,
-    ro_max: String,
-    ro_min: String,
-    mask: SeriesMask,
-    max_err: f64,
-    trim_mode: TrimMode,
-    trim: f64,
-}
-
 type Outcome = Result<Vec<Row>, String>;
 
 pub struct ResCadApp {
@@ -85,7 +71,9 @@ pub struct ResCadApp {
     trim: f64,
     trim_auto: bool,
     selected: Option<usize>,
-    cache: Option<(Inputs, Outcome)>,
+    /// Results with the inputs they were computed from; recomputed only when
+    /// the inputs change.
+    cache: Option<(Params, Outcome)>,
     focus_input: bool,
     flash: Option<(String, f64)>,
 }
@@ -115,9 +103,21 @@ impl Default for ResCadApp {
 }
 
 impl ResCadApp {
-    fn inputs(&self) -> Inputs {
-        Inputs {
-            tab: self.tab,
+    fn mode(&self) -> Mode {
+        match (self.tab, self.trim_mode) {
+            (Tab::Series, _) => Mode::Series,
+            (Tab::Parallel, _) => Mode::Parallel,
+            (Tab::Network, _) => Mode::Network,
+            (Tab::Divider, _) => Mode::Divider,
+            (Tab::Trim, TrimMode::Divider) => Mode::TrimDivider,
+            (Tab::Trim, TrimMode::Resistor) => Mode::TrimResistor,
+            (Tab::Nearest | Tab::About, _) => Mode::Nearest,
+        }
+    }
+
+    fn inputs(&self) -> Params {
+        Params {
+            mode: self.mode(),
             value: self.value.clone(),
             ratio_num: self.ratio_num.clone(),
             ratio_den: self.ratio_den.clone(),
@@ -125,7 +125,6 @@ impl ResCadApp {
             ro_min: self.ro_min.clone(),
             mask: self.mask,
             max_err: self.max_err,
-            trim_mode: self.trim_mode,
             trim: self.trim,
         }
     }
@@ -133,7 +132,7 @@ impl ResCadApp {
     fn results(&mut self) -> &Outcome {
         let inputs = self.inputs();
         if self.cache.as_ref().is_none_or(|(old, _)| *old != inputs) {
-            let outcome = compute(&inputs);
+            let outcome = table::compute(&inputs);
             let len = outcome.as_ref().map_or(0, Vec::len);
             self.selected = if len == 0 {
                 None
@@ -235,20 +234,14 @@ impl ResCadApp {
         if let Some((inputs, Ok(rows))) = &self.cache
             && let Some(row) = rows.get(idx)
         {
-            ctx.copy_text(row_text(inputs, row));
+            ctx.copy_text(table::row_text(inputs, row));
             self.flash = Some(("Copied".into(), ctx.input(|i| i.time)));
         }
     }
 
     fn copy_all(&mut self, ctx: &egui::Context) {
         if let Some((inputs, Ok(rows))) = &self.cache {
-            let mut text = columns(inputs).join("\t");
-            text.push('\n');
-            for row in rows {
-                text.push_str(&row_text(inputs, row));
-                text.push('\n');
-            }
-            ctx.copy_text(text);
+            ctx.copy_text(table::all_rows_text(inputs, rows));
             self.flash = Some((format!("Copied {} rows", rows.len()), ctx.input(|i| i.time)));
         }
     }
@@ -442,22 +435,10 @@ impl ResCadApp {
             });
     }
 
-    /// The required adjustment range.  "Auto" covers the worst case of the
-    /// selected series' tolerance: for a divider both resistors may drift,
-    /// moving the ratio by up to 2 · (1 - ratio) · tolerance; for a resistor,
-    /// by the tolerance itself.
+    /// The required adjustment range; see [`table::auto_trim`] for "auto".
     fn trim_control(&mut self, ui: &mut egui::Ui) {
         if self.trim_auto {
-            let tol = self.mask.component_tolerance();
-            self.trim = match self.trim_mode {
-                TrimMode::Divider => match ratio_of(&self.ratio_num, &self.ratio_den) {
-                    Some(r) if r > 0.0 && r < 1.0 => {
-                        ((2.0 * (1.0 - r) * tol * 100.0).round() / 100.0).max(0.01)
-                    }
-                    _ => self.trim,
-                },
-                TrimMode::Resistor => tol,
-            };
+            self.trim = self.inputs().auto_trim();
         }
         ui.horizontal(|ui| {
             ui.label("Trim range ±");
@@ -536,7 +517,7 @@ impl ResCadApp {
             }
         };
 
-        let cols = columns(&inputs);
+        let cols = inputs.mode.columns();
         let row_h = 20.0;
         let font = FontId::monospace(14.0);
         let width = ui.available_width();
@@ -560,12 +541,7 @@ impl ResCadApp {
         if rows.is_empty() {
             ui.add_space(20.0);
             ui.vertical_centered(|ui| {
-                let msg = if inputs.tab == Tab::Trim {
-                    "No combination covers the trim range"
-                } else {
-                    "No combinations within the error limit"
-                };
-                ui.label(RichText::new(msg).weak());
+                ui.label(RichText::new(inputs.mode.empty_message()).weak());
             });
             return;
         }
@@ -610,23 +586,12 @@ impl ResCadApp {
                     } else {
                         visuals.text_color()
                     };
-                    // For trimmer circuits, rate the range against the one asked for:
-                    // a trimmer 20 % low needs 1.25× at best.
-                    let rating = if inputs.tab == Tab::Trim {
-                        match row.error_pct / inputs.trim {
-                            x if x < 1.6 => 0.0,
-                            x if x < 2.5 => 1.0,
-                            _ => 5.0,
-                        }
-                    } else {
-                        row.error_pct
-                    };
                     let err_color = if is_sel {
                         text_color
                     } else {
-                        error_colour(rating, visuals.dark_mode)
+                        rating_colour(table::rating(&inputs, row), visuals.dark_mode)
                     };
-                    for (c, cell) in cells(&inputs, row).iter().enumerate() {
+                    for (c, cell) in table::cells(&inputs, row).iter().enumerate() {
                         let x = rect.left() + col_w * (c as f32 + 1.0) - 8.0;
                         let color = if c == 0 { err_color } else { text_color };
                         // The circuit description is text, not a number.
@@ -821,153 +786,13 @@ fn text_selection_active(ctx: &egui::Context) -> bool {
         .is_some_and(|r| !r.is_empty())
 }
 
-fn compute(inputs: &Inputs) -> Outcome {
-    let need =
-        |text: &str, what: &str| units::parse(text).ok_or_else(|| format!("Enter a valid {what}"));
-    match inputs.tab {
-        Tab::Nearest => Ok(calc::nearest(inputs.mask, need(&inputs.value, "value")?)),
-        Tab::Series => Ok(calc::series(
-            inputs.mask,
-            need(&inputs.value, "value")?,
-            inputs.max_err,
-        )),
-        Tab::Parallel => Ok(calc::parallel(
-            inputs.mask,
-            need(&inputs.value, "value")?,
-            inputs.max_err,
-        )),
-        Tab::Divider => {
-            let num = need(&inputs.ratio_num, "ratio")?;
-            let den = need(&inputs.ratio_den, "ratio")?;
-            let ro_max = need(&inputs.ro_max, "maximum output resistance")?;
-            let ro_min = need(&inputs.ro_min, "minimum output resistance")?;
-            calc::divider(inputs.mask, num / den, ro_min, ro_max, inputs.max_err).map_err(|e| {
-                match e {
-                    DividerError::RatioOutOfRange => "Ratio must be between 0 and 1".to_string(),
-                    DividerError::BadInput => {
-                        "Output resistance limits must be positive".to_string()
-                    }
-                    DividerError::TrimOutOfRange => unreachable!(),
-                }
-            })
-        }
-        Tab::Network => Ok(calc::network(
-            inputs.mask,
-            need(&inputs.value, "value")?,
-            inputs.max_err,
-        )),
-        Tab::Trim => match inputs.trim_mode {
-            TrimMode::Divider => {
-                let num = need(&inputs.ratio_num, "ratio")?;
-                let den = need(&inputs.ratio_den, "ratio")?;
-                let ro_max = need(&inputs.ro_max, "maximum output resistance")?;
-                let ro_min = need(&inputs.ro_min, "minimum output resistance")?;
-                calc::trim_divider(inputs.mask, num / den, ro_min, ro_max, inputs.trim).map_err(
-                    |e| match e {
-                        DividerError::RatioOutOfRange => {
-                            "Ratio must be between 0 and 1".to_string()
-                        }
-                        DividerError::BadInput => {
-                            "Output resistance limits must be positive".to_string()
-                        }
-                        DividerError::TrimOutOfRange => {
-                            "The trim range would take the ratio past 1".to_string()
-                        }
-                    },
-                )
-            }
-            TrimMode::Resistor => {
-                calc::trim_resistor(inputs.mask, need(&inputs.value, "value")?, inputs.trim)
-                    .ok_or_else(|| "The trim range must be between 0 and 90 %".to_string())
-            }
-        },
-        Tab::About => Ok(Vec::new()),
-    }
-}
-
-fn columns(inputs: &Inputs) -> &'static [&'static str] {
-    match inputs.tab {
-        Tab::Nearest => &["% err", "R"],
-        Tab::Series => &["% err", "R1", "R2", "R1+R2"],
-        Tab::Parallel => &["% err", "R1", "R2", "R1||R2"],
-        Tab::Network => &["% err", "R1", "R2", "R3", "Total", "Circuit"],
-        Tab::Divider => &["% err", "R1", "R2", "Ratio", "RO"],
-        Tab::Trim => match inputs.trim_mode {
-            TrimMode::Divider => &["±adj %", "R1", "P", "R2", "Wiper", "RO"],
-            TrimMode::Resistor => &["±adj %", "Rs", "P", "Rp", "Wiper", "Circuit"],
-        },
-        Tab::About => &[],
-    }
-}
-
-/// The divider ratio typed in, if valid.
-fn ratio_of(num: &str, den: &str) -> Option<f64> {
-    Some(units::parse(num)? / units::parse(den)?)
-}
-
-fn cells(inputs: &Inputs, row: &Row) -> Vec<String> {
-    let r = &row.resistors;
-    let ohms = |v: f64| units::format(v);
-    match (inputs.tab, row.kind) {
-        (Tab::Trim, kind) => {
-            let target = match inputs.trim_mode {
-                TrimMode::Divider => ratio_of(&inputs.ratio_num, &inputs.ratio_den),
-                TrimMode::Resistor => units::parse(&inputs.value),
-            }
-            .unwrap_or(f64::NAN);
-            let wiper = format!("{:.0}%", calc::wiper(row, target) * 100.0);
-            let mut out = vec![format!("±{:.2}", row.error_pct), ohms(r[0]), ohms(r[1])];
-            out.push(r.get(2).map_or("–".into(), |&v| ohms(v)));
-            out.push(wiper);
-            out.push(if kind == Kind::PotDivider {
-                ohms((r[0] + r[1] + r[2]) * target * (1.0 - target))
-            } else {
-                kind.circuit().into()
-            });
-            out
-        }
-        (_, Kind::SeriesParallel | Kind::ParallelSeries) => {
-            let total = if row.kind == Kind::SeriesParallel {
-                r[0] + r[1] * r[2] / (r[1] + r[2])
-            } else {
-                r[0] * (r[1] + r[2]) / (r[0] + r[1] + r[2])
-            };
-            let mut out = vec![units::format_error(row.error_pct)];
-            out.extend(r.iter().map(|&v| ohms(v)));
-            out.push(units::format_digits(total, 5));
-            out.push(row.kind.circuit().into());
-            out
-        }
-        _ => {
-            let mut out = vec![units::format_error(row.error_pct)];
-            out.extend(r.iter().map(|&v| ohms(v)));
-            if let [r1, r2] = r[..] {
-                match inputs.tab {
-                    Tab::Series => out.push(ohms(r1 + r2)),
-                    Tab::Parallel => out.push(ohms(r1 * r2 / (r1 + r2))),
-                    Tab::Divider => {
-                        out.push(format!("{:.4}", r2 / (r1 + r2)));
-                        out.push(ohms(r1 * r2 / (r1 + r2)));
-                    }
-                    _ => {}
-                }
-            }
-            out
-        }
-    }
-}
-
-fn row_text(inputs: &Inputs, row: &Row) -> String {
-    cells(inputs, row).join("\t")
-}
-
-fn error_colour(pct: f64, dark: bool) -> Color32 {
-    let a = pct.abs();
-    match (a, dark) {
-        (a, true) if a < 0.5 => Color32::from_rgb(110, 210, 120),
-        (a, false) if a < 0.5 => Color32::from_rgb(20, 130, 40),
-        (a, true) if a < 2.0 => Color32::from_rgb(220, 200, 90),
-        (a, false) if a < 2.0 => Color32::from_rgb(150, 120, 0),
+/// Green, amber or red for a [`table::rating`].
+fn rating_colour(rating: u8, dark: bool) -> Color32 {
+    match (rating, dark) {
+        (0, true) => Color32::from_rgb(110, 210, 120),
+        (0, false) => Color32::from_rgb(20, 130, 40),
+        (1, true) => Color32::from_rgb(220, 200, 90),
+        (1, false) => Color32::from_rgb(150, 120, 0),
         (_, true) => Color32::from_rgb(235, 130, 100),
         (_, false) => Color32::from_rgb(190, 60, 30),
     }
@@ -1116,7 +941,8 @@ fn paint_resistor(ui: &mut egui::Ui, bands: &[colour_code::Band]) -> egui::Respo
             start + i as f32 * (band_w + gap)
         };
         let r = Rect::from_min_size(egui::pos2(x, body.top()), Vec2::new(band_w, body.height()));
-        p.rect_filled(r, CornerRadius::ZERO, band.colour);
+        let [red, green, blue] = band.colour;
+        p.rect_filled(r, CornerRadius::ZERO, Color32::from_rgb(red, green, blue));
     }
     resp
 }

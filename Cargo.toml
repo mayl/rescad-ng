@@ -4,7 +4,11 @@ version = "1.0.0"
 description = "Next-generation standard-value resistor calculator, inspired by Vader Systems ResCad"
 edition = "2024"
 
+[workspace]
+members = ["core", "web"]
+
 [dependencies]
+rescad-core = { path = "core" }
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "wayland", "x11"] }
 
 [profile.release]

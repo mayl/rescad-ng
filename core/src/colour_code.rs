@@ -1,62 +1,61 @@
 //! IEC 60062 resistor colour code.
 
-use eframe::egui::Color32;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Band {
     pub name: &'static str,
-    pub colour: Color32,
+    /// sRGB.
+    pub colour: [u8; 3],
 }
 
 const DIGITS: [Band; 10] = [
     Band {
         name: "black",
-        colour: Color32::from_rgb(20, 20, 20),
+        colour: [20, 20, 20],
     },
     Band {
         name: "brown",
-        colour: Color32::from_rgb(130, 75, 30),
+        colour: [130, 75, 30],
     },
     Band {
         name: "red",
-        colour: Color32::from_rgb(210, 30, 30),
+        colour: [210, 30, 30],
     },
     Band {
         name: "orange",
-        colour: Color32::from_rgb(245, 135, 20),
+        colour: [245, 135, 20],
     },
     Band {
         name: "yellow",
-        colour: Color32::from_rgb(245, 220, 30),
+        colour: [245, 220, 30],
     },
     Band {
         name: "green",
-        colour: Color32::from_rgb(30, 160, 60),
+        colour: [30, 160, 60],
     },
     Band {
         name: "blue",
-        colour: Color32::from_rgb(30, 80, 220),
+        colour: [30, 80, 220],
     },
     Band {
         name: "violet",
-        colour: Color32::from_rgb(140, 60, 200),
+        colour: [140, 60, 200],
     },
     Band {
         name: "grey",
-        colour: Color32::from_rgb(140, 140, 140),
+        colour: [140, 140, 140],
     },
     Band {
         name: "white",
-        colour: Color32::from_rgb(250, 250, 250),
+        colour: [250, 250, 250],
     },
 ];
 const GOLD: Band = Band {
     name: "gold",
-    colour: Color32::from_rgb(212, 175, 55),
+    colour: [212, 175, 55],
 };
 const SILVER: Band = Band {
     name: "silver",
-    colour: Color32::from_rgb(192, 192, 200),
+    colour: [192, 192, 200],
 };
 
 fn multiplier(exp: i32) -> Option<Band> {

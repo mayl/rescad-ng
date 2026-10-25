@@ -4,7 +4,8 @@ A next-generation, cross-platform rewrite of **Resistor CAD 2.0** (ResCad, © 19
 Vader Systems), the little Windows freeware tool for finding standard (E-series) resistor values.
 
 It is a single self-contained executable. There's nothing to install: download it and double-click it.
-It opens in a fraction of a second and recalculates as you type.
+It opens in a fraction of a second and recalculates as you type. The same calculators also run in a web
+browser, compiled to WebAssembly.
 
 ## What it does
 
@@ -78,6 +79,19 @@ decimal point, as on resistor markings.
 - **macOS:** `ResCAD NG.app` is a universal binary for Apple Silicon and Intel. It isn't notarised,
   so the first time, right-click it and choose **Open**.
 
+## Web version
+
+`web/` is a [Leptos](https://leptos.dev) front end over the same calculation code, compiled to
+WebAssembly. It runs entirely in the browser: about 480 KB of WASM, 170 KB gzipped, with no server
+logic. It has the same tabs, keyboard shortcuts and copy-to-spreadsheet behaviour, and the layout
+adapts to phones.
+
+```sh
+nix run .#serve-web                   # build the site and serve it on http://127.0.0.1:8080/
+nix build .#web                       # just the static site, in ./result: host it anywhere
+cd web && nix develop .. -c trunk serve   # development, with live reload
+```
+
 ## Building
 
 Everything builds with Nix, so you don't need to install anything on the host.
@@ -96,7 +110,7 @@ On NixOS, add the flake input `rescad-ng.url = "github:mayl/rescad-ng"` and `inp
 
 ```sh
 nix build .#windows                   # Windows .exe, cross-compiled with Nix's MinGW toolchain
-nix develop -c cargo test             # run the unit tests
+nix develop -c cargo test --workspace --exclude rescad-web   # run the unit tests
 nix develop -c cargo run              # run a debug build
 nix develop -c ./build-dist.sh        # portable Linux + Windows executables into ./dist
 ```
@@ -112,10 +126,12 @@ Without Nix, a stable Rust toolchain is enough for a native build: `cargo build 
 
 | File | Contents |
 |---|---|
-| `src/eseries.rs` | E-series tables (IEC 60063) and the nearest-value lookup |
-| `src/calc.rs` | The Nearest, Series, Parallel, Network, Divider and Trim searches |
-| `src/units.rs` | Parsing and formatting of RKM-notation values |
-| `src/colour_code.rs` | The colour-band code (IEC 60062) |
-| `src/app.rs` | The user interface (egui) |
+| `core/src/eseries.rs` | E-series tables (IEC 60063) and the nearest-value lookup |
+| `core/src/calc.rs` | The Nearest, Series, Parallel, Network, Divider and Trim searches |
+| `core/src/units.rs` | Parsing and formatting of RKM-notation values |
+| `core/src/colour_code.rs` | The colour-band code (IEC 60062) |
+| `core/src/table.rs` | Calculator modes, input handling and result formatting, shared by both front ends |
+| `src/app.rs` | The desktop user interface (egui) |
+| `web/src/main.rs`, `web/style.css` | The browser user interface (Leptos) |
 | `src/icon.rs`, `build.rs` | The procedurally drawn icon, and the Windows icon and version resource |
 | `flake.nix`, `nix/write-icon.rs` | The Nix packages and dev shell, and the icon PNGs for the desktop entry |
