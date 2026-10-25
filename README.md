@@ -85,11 +85,12 @@ Everything builds with Nix, so you don't need to install anything on the host.
 **Nix / NixOS:** the flake provides a package with a desktop entry and icon, for x86_64 and aarch64 Linux:
 
 ```sh
-nix run .                            # run it straight from a checkout
-nix profile install .                # put ResCAD NG in your application menu
+nix run github:mayl/rescad-ng        # run it without cloning
+nix run .                            # or from a checkout
+nix profile install github:mayl/rescad-ng   # put ResCAD NG in your application menu
 ```
 
-On NixOS, add `inputs.rescad-ng.packages.${pkgs.system}.default` to `environment.systemPackages`.
+On NixOS, add the flake input `rescad-ng.url = "github:mayl/rescad-ng"` and `inputs.rescad-ng.packages.${pkgs.system}.default` to `environment.systemPackages`.
 
 **Portable executables and development:**
 
