@@ -1,0 +1,18 @@
+[package]
+name = "rescad-ng"
+version = "1.0.0"
+description = "Next-generation standard-value resistor calculator, inspired by Vader Systems ResCad"
+edition = "2024"
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "wayland", "x11"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[build-dependencies]
+embed-resource = "3"
