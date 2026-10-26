@@ -27,6 +27,14 @@ pub enum Kind {
     PotSeriesShunt,
     /// (Rs + P) ∥ Rp.
     PotShunt,
+    /// Divider with R1 + R2 on top, R3 at the bottom.
+    DividerTopSeries,
+    /// Divider with R1 ∥ R2 on top, R3 at the bottom.
+    DividerTopParallel,
+    /// Divider with R1 on top, R2 + R3 at the bottom.
+    DividerBottomSeries,
+    /// Divider with R1 on top, R2 ∥ R3 at the bottom.
+    DividerBottomParallel,
 }
 
 impl Kind {
@@ -40,6 +48,10 @@ impl Kind {
             Kind::PotSeries => "Rs + P",
             Kind::PotSeriesShunt => "Rs + P||Rp",
             Kind::PotShunt => "(Rs+P) || Rp",
+            Kind::DividerTopSeries => "R1+R2 / R3",
+            Kind::DividerTopParallel => "R1||R2 / R3",
+            Kind::DividerBottomSeries => "R1 / R2+R3",
+            Kind::DividerBottomParallel => "R1 / R2||R3",
         }
     }
 
@@ -48,7 +60,12 @@ impl Kind {
         match self {
             Kind::Plain if parts == 1 => &["R"],
             Kind::Plain => &["R1", "R2"],
-            Kind::SeriesParallel | Kind::ParallelSeries => &["R1", "R2", "R3"],
+            Kind::SeriesParallel
+            | Kind::ParallelSeries
+            | Kind::DividerTopSeries
+            | Kind::DividerTopParallel
+            | Kind::DividerBottomSeries
+            | Kind::DividerBottomParallel => &["R1", "R2", "R3"],
             Kind::PotDivider => &["R1", "P", "R2"],
             Kind::PotSeries => &["Rs", "P"],
             Kind::PotSeriesShunt | Kind::PotShunt => &["Rs", "P", "Rp"],
@@ -61,6 +78,19 @@ impl Kind {
             Kind::PotDivider | Kind::PotSeries | Kind::PotSeriesShunt | Kind::PotShunt => Some(1),
             _ => None,
         }
+    }
+
+    /// The top (Vin to Vout) and bottom (Vout to ground) resistance of a
+    /// divider row, or `None` if the row is not a fixed divider.
+    pub fn divider_legs(self, r: &[f64]) -> Option<(f64, f64)> {
+        Some(match (self, r) {
+            (Kind::Plain, &[a, b]) => (a, b),
+            (Kind::DividerTopSeries, &[a, b, c]) => (a + b, c),
+            (Kind::DividerTopParallel, &[a, b, c]) => (par(a, b), c),
+            (Kind::DividerBottomSeries, &[a, b, c]) => (a, b + c),
+            (Kind::DividerBottomParallel, &[a, b, c]) => (a, par(b, c)),
+            _ => return None,
+        })
     }
 }
 
@@ -245,6 +275,123 @@ pub fn divider(
         r1 = neighbours(mask, r1).above;
     }
     sort(&mut rows);
+    Ok(rows)
+}
+
+/// The pairs that approximate `x`, each visited once: series pairs a + b with
+/// a walking down from `x` to half of it, and parallel pairs a ∥ b with a
+/// walking up from `x` to twice it; b is the best match for the remainder.
+/// Returns false once `steps` reaches [`MAX_STEPS`].
+fn pairs(mask: SeriesMask, x: f64, steps: &mut usize, mut f: impl FnMut(bool, f64, f64)) -> bool {
+    let mut a = neighbours(mask, x).below;
+    while a >= x / 2.01 {
+        if *steps >= MAX_STEPS {
+            return false;
+        }
+        *steps += 1;
+        if a < x {
+            let b = neighbours(mask, x - a).nearest;
+            f(true, a.max(b), a.min(b));
+        }
+        a = neighbours(mask, a).below;
+    }
+    let mut a = neighbours(mask, x).above;
+    while a <= x * 2.01 {
+        if *steps >= MAX_STEPS {
+            return false;
+        }
+        *steps += 1;
+        if a > x {
+            let b = neighbours(mask, x * a / (a - x)).nearest;
+            f(false, a.min(b), a.max(b));
+        }
+        a = neighbours(mask, a).above;
+    }
+    true
+}
+
+/// Three-resistor voltage dividers ≈ `ratio`, for when no pair is close
+/// enough: one leg is a single resistor and the other a series or parallel
+/// pair (R1+R2 / R3, R1∥R2 / R3, R1 / R2+R3, R1 / R2∥R3).  As in
+/// [`divider`], the single resistor sweeps the range the output resistance
+/// limits allow, and the pair makes up the other leg.
+pub fn divider3(
+    mask: SeriesMask,
+    ratio: f64,
+    ro_min: f64,
+    ro_max: f64,
+    max_err: f64,
+) -> Result<Vec<Row>, DividerError> {
+    if !ratio.is_finite() || ratio <= 0.0 || ratio > 0.9999 {
+        return Err(DividerError::RatioOutOfRange);
+    }
+    if !usable(ro_min) || !usable(ro_max) {
+        return Err(DividerError::BadInput);
+    }
+    let mut rows = Vec::new();
+    if mask.is_empty() {
+        return Ok(rows);
+    }
+    let (ro_min, ro_max) = if ro_min <= ro_max {
+        (ro_min, ro_max)
+    } else {
+        (ro_max, ro_min)
+    };
+    let mut push = |top: f64, bottom: f64, resistors: Vec<f64>, kind: Kind| {
+        let ro = par(top, bottom);
+        let err = pct(bottom / (top + bottom), ratio);
+        if ro >= ro_min && ro <= ro_max && err.abs() < max_err {
+            rows.push(Row {
+                error_pct: err,
+                resistors,
+                kind,
+            });
+        }
+    };
+
+    // Single top resistor R1, since RO = R1 · ratio; the bottom pair makes up
+    // ratio · R1 / (1 - ratio).
+    let mut steps = 0;
+    let end = neighbours(mask, ro_max / ratio).above;
+    let mut r1 = neighbours(mask, ro_min / ratio).below;
+    while r1 < end {
+        let bottom = ratio * r1 / (1.0 - ratio);
+        let more = pairs(mask, bottom, &mut steps, |series, a, b| {
+            if series {
+                push(r1, a + b, vec![r1, a, b], Kind::DividerBottomSeries);
+            } else {
+                push(r1, par(a, b), vec![r1, a, b], Kind::DividerBottomParallel);
+            }
+        });
+        if !more {
+            break;
+        }
+        r1 = neighbours(mask, r1).above;
+    }
+
+    // Single bottom resistor R3, since RO = R3 · (1 - ratio); the top pair
+    // makes up R3 · (1 - ratio) / ratio.
+    let mut steps = 0;
+    let end = neighbours(mask, ro_max / (1.0 - ratio)).above;
+    let mut r3 = neighbours(mask, ro_min / (1.0 - ratio)).below;
+    while r3 < end {
+        let top = r3 * (1.0 - ratio) / ratio;
+        let more = pairs(mask, top, &mut steps, |series, a, b| {
+            if series {
+                push(a + b, r3, vec![a, b, r3], Kind::DividerTopSeries);
+            } else {
+                push(par(a, b), r3, vec![a, b, r3], Kind::DividerTopParallel);
+            }
+        });
+        if !more {
+            break;
+        }
+        r3 = neighbours(mask, r3).above;
+    }
+
+    sort(&mut rows);
+    rows.dedup();
+    rows.truncate(MAX_ROWS);
     Ok(rows)
 }
 
@@ -498,7 +645,13 @@ pub fn trim_resistor(mask: SeriesMask, target: f64, trim_pct: f64) -> Option<Vec
             steps += 1;
             let q = 2.0 * (target - rs);
             for rp in candidates(mask, q * p / (p - q)) {
-                push_trim(&mut rows, Kind::PotSeriesShunt, vec![rs, p, rp], target, need);
+                push_trim(
+                    &mut rows,
+                    Kind::PotSeriesShunt,
+                    vec![rs, p, rp],
+                    target,
+                    need,
+                );
             }
             rs = neighbours(mask, rs).below;
         }
@@ -604,6 +757,7 @@ mod tests {
         assert!(series(none, 1000.0, 5.0).is_empty());
         assert!(parallel(none, 1000.0, 5.0).is_empty());
         assert!(divider(none, 0.5, 1e3, 1e4, 5.0).unwrap().is_empty());
+        assert!(divider3(none, 0.5, 1e3, 1e4, 5.0).unwrap().is_empty());
         assert!(network(none, 1000.0, 5.0).is_empty());
         assert!(trim_divider(none, 0.5, 1e3, 1e4, 1.0).unwrap().is_empty());
         assert!(trim_resistor(none, 1000.0, 1.0).unwrap().is_empty());
@@ -615,6 +769,8 @@ mod tests {
         let _ = series(all, 1e15, 2.0);
         let _ = parallel(all, 1e-15, 2.0);
         let _ = divider(all, 0.0001, 1e-3, 1e12, 2.0).unwrap();
+        let _ = divider3(all, 0.0001, 1e-3, 1e12, 2.0).unwrap();
+        let _ = divider3(all, 0.9999, 1e-3, 1e12, 2.0).unwrap();
         let _ = network(all, 1e15, 50.0);
         let _ = network(all, 1e-15, 50.0);
         let _ = trim_divider(all, 0.0001, 1e-3, 1e12, 0.01).unwrap();
@@ -630,6 +786,32 @@ mod tests {
             Kind::ParallelSeries => par(v[0], v[1] + v[2]),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn divider3_beats_pairs() {
+        // 0.3 from E12 with RO 1k..10k: the best pair is 27k / 12k (+2.56 %);
+        // three resistors get far closer (2k7+1k5 / 1k8 is exact).
+        let pairs = divider(E12, 0.3, 1e3, 1e4, 10.0).unwrap();
+        let rows = divider3(E12, 0.3, 1e3, 1e4, 2.0).unwrap();
+        assert!(rows[0].error_pct.abs() < pairs[0].error_pct.abs() / 10.0);
+        for kind in [
+            Kind::DividerTopSeries,
+            Kind::DividerTopParallel,
+            Kind::DividerBottomSeries,
+            Kind::DividerBottomParallel,
+        ] {
+            assert!(rows.iter().any(|r| r.kind == kind), "{kind:?}");
+        }
+        for r in &rows {
+            let (top, bottom) = r.kind.divider_legs(&r.resistors).unwrap();
+            assert!((pct(bottom / (top + bottom), 0.3) - r.error_pct).abs() < 1e-9);
+            assert!((1e3..=1e4).contains(&par(top, bottom)));
+        }
+        assert_eq!(
+            divider3(E12, 1.5, 1e3, 1e4, 1.0),
+            Err(DividerError::RatioOutOfRange)
+        );
     }
 
     #[test]
@@ -652,7 +834,9 @@ mod tests {
         let rows = trim_divider(SeriesMask::E96, ratio, 1e3, 10e3, 0.5).unwrap();
         assert!(!rows.is_empty());
         for r in &rows {
-            let [r1, p, r2] = r.resistors[..] else { panic!() };
+            let [r1, p, r2] = r.resistors[..] else {
+                panic!()
+            };
             assert!(POTS.contains(&p));
             let pl = p * (1.0 - POT_TOLERANCE);
             let rt = r1 + pl + r2;

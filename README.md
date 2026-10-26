@@ -15,7 +15,7 @@ browser, compiled to WebAssembly: **[try it online](https://mayl.github.io/resca
 | **Series** | Pairs where R1 + R2 ≈ the desired value |
 | **Parallel** | Pairs where R1 ‖ R2 ≈ the desired value |
 | **Network** | Three-resistor networks R1 + (R2 ‖ R3) and R1 ‖ (R2 + R3), which get far closer than any pair |
-| **Divider** | Voltage dividers where R2/(R1+R2) ≈ a ratio, with the output resistance R1 ‖ R2 kept between a min and max |
+| **Divider** | Voltage dividers where R2/(R1+R2) ≈ a ratio, with the output resistance R1 ‖ R2 kept between a min and max. **3 resistors** mode makes one leg a series or parallel pair (R1+R2 / R3, R1‖R2 / R3, R1 / R2+R3, R1 / R2‖R3) for ratios no pair can hit |
 | **Trim** | Adjustable circuits built around a trimmer: a **divider** (R1, trimmer, R2, output on the wiper), or a **resistor** (Rs + P, Rs + (P ‖ Rp) or (Rs + P) ‖ Rp) |
 
 The Nearest, Series, Parallel and Divider searches, default error limits and value notation were
@@ -41,7 +41,7 @@ trimmer's travel. Trimmers come from the usual 1-2-5 values (10R to 2M).
 
 - Linux, Windows and macOS, as a single file with nothing to install
 - Results update live as you type. Pressing Enter isn't needed any more.
-- Three-resistor networks, and trimmable dividers and resistors
+- Three-resistor networks and dividers, and trimmable dividers and resistors
 - E48 added to the E6, E12, E24, E96 and E192 series. Series can be combined, e.g. E12 + E96.
 - Results are sorted by actual error and colour-coded green, amber or red
 - Extra columns show the combined value (R1+R2, R1‖R2, and the divider's actual ratio and RO)
@@ -130,7 +130,7 @@ Without Nix, a stable Rust toolchain is enough for a native build: `cargo build 
 | File | Contents |
 |---|---|
 | `core/src/eseries.rs` | E-series tables (IEC 60063) and the nearest-value lookup |
-| `core/src/calc.rs` | The Nearest, Series, Parallel, Network, Divider and Trim searches |
+| `core/src/calc.rs` | The Nearest, Series, Parallel, Network, Divider (2 and 3 resistors) and Trim searches |
 | `core/src/units.rs` | Parsing and formatting of RKM-notation values |
 | `core/src/colour_code.rs` | The colour-band code (IEC 60062) |
 | `core/src/table.rs` | Calculator modes, input handling and result formatting, shared by both front ends |

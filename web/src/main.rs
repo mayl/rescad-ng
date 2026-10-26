@@ -58,6 +58,8 @@ fn main() {
 struct State {
     tab: RwSignal<Tab>,
     trim_divider: RwSignal<bool>,
+    /// The Divider tab searches three-resistor dividers.
+    divider3: RwSignal<bool>,
     value: RwSignal<String>,
     ratio_num: RwSignal<String>,
     ratio_den: RwSignal<String>,
@@ -80,6 +82,7 @@ impl State {
         let defaults = Params::default();
         let tab = RwSignal::new(Tab::Nearest);
         let trim_divider = RwSignal::new(true);
+        let divider3 = RwSignal::new(false);
         let value = RwSignal::new(defaults.value.clone());
         let ratio_num = RwSignal::new(defaults.ratio_num.clone());
         let ratio_den = RwSignal::new(defaults.ratio_den.clone());
@@ -93,6 +96,7 @@ impl State {
 
         let params = Memo::new(move |_| {
             let mode = match (tab.get(), trim_divider.get()) {
+                (Tab::Divider, _) if divider3.get() => Mode::Divider3,
                 (Tab::Series, _) => Mode::Series,
                 (Tab::Parallel, _) => Mode::Parallel,
                 (Tab::Network, _) => Mode::Network,
@@ -125,6 +129,7 @@ impl State {
         let state = Self {
             tab,
             trim_divider,
+            divider3,
             value,
             ratio_num,
             ratio_den,
@@ -304,6 +309,7 @@ fn App() -> impl IntoView {
     Effect::new(move |_| {
         state.tab.track();
         state.trim_divider.track();
+        state.divider3.track();
         focus_first_input();
     });
 
@@ -421,35 +427,54 @@ fn Inputs(state: State) -> impl IntoView {
     };
     let hint = move || state.params.with(|p| p.mode.hint());
 
+    // A pair of chips choosing between two variants of a tab.
+    let mode_button =
+        move |sig: RwSignal<bool>, on: bool, name: &'static str, tip: &'static str| {
+            view! {
+                <button
+                    class="chip"
+                    class:on=move || sig.get() == on
+                    title=tip
+                    on:click=move |_| {
+                        if sig.get_untracked() != on {
+                            sig.set(on);
+                            state.selected.set(Some(0));
+                        }
+                    }
+                >
+                    {name}
+                </button>
+            }
+        };
+
     move || match state.tab.get() {
         Tab::Divider => view! {
+            <div class="modes">
+                {mode_button(state.divider3, false, "2 resistors", "R1 on top, R2 at the bottom")}
+                {mode_button(
+                    state.divider3,
+                    true,
+                    "3 resistors",
+                    "One leg made of two resistors in series or parallel, for more precision",
+                )}
+            </div>
             {divider_fields()}
-            <DividerDiagram trimmer=false />
+            {move || {
+                if state.divider3.get() {
+                    view! { <DividerDiagram trimmer=false top="top" bottom="bottom" /> }.into_any()
+                } else {
+                    view! { <DividerDiagram trimmer=false /> }.into_any()
+                }
+            }}
             <p class="hint">{hint}</p>
         }
-            .into_any(),
+        .into_any(),
         Tab::Trim => {
-            let mode_button = move |divider: bool, name: &'static str, tip: &'static str| {
-                view! {
-                    <button
-                        class="chip"
-                        class:on=move || state.trim_divider.get() == divider
-                        title=tip
-                        on:click=move |_| {
-                            if state.trim_divider.get_untracked() != divider {
-                                state.trim_divider.set(divider);
-                                state.selected.set(Some(0));
-                            }
-                        }
-                    >
-                        {name}
-                    </button>
-                }
-            };
+            let td = state.trim_divider;
             view! {
                 <div class="modes">
-                    {mode_button(true, "Divider", "R1, trimmer, R2 in a chain, output on the wiper")}
-                    {mode_button(false, "Resistor", "A trimmer padded with fixed resistors")}
+                    {mode_button(td, true, "Divider", "R1, trimmer, R2 in a chain, output on the wiper")}
+                    {mode_button(td, false, "Resistor", "A trimmer padded with fixed resistors")}
                 </div>
                 {move || {
                     if state.trim_divider.get() {
@@ -470,7 +495,7 @@ fn Inputs(state: State) -> impl IntoView {
             {value_field()}
             <p class="hint">{hint}</p>
         }
-            .into_any(),
+        .into_any(),
     }
 }
 
@@ -582,8 +607,7 @@ fn Parts(state: State) -> impl IntoView {
             .iter()
             .enumerate()
             .map(|(i, &r)| {
-                let label = (row.resistors.len() > 1)
-                    .then(|| labels.get(i).copied().unwrap_or(""));
+                let label = (row.resistors.len() > 1).then(|| labels.get(i).copied().unwrap_or(""));
                 let value = units::format(r);
                 if row.kind.pot_index() == Some(i) {
                     view! {
@@ -620,13 +644,21 @@ fn rgb(c: [u8; 3]) -> String {
 /// A resistor body with its colour bands: value bands grouped on the left,
 /// the tolerance band set apart on the right.
 fn resistor_svg(bands: &[Band]) -> impl IntoView + use<> {
-    let body = if bands.len() == 5 { "#5a96d2" } else { "#dec496" };
+    let body = if bands.len() == 5 {
+        "#5a96d2"
+    } else {
+        "#dec496"
+    };
     let n = bands.len();
     let rects = bands
         .iter()
         .enumerate()
         .map(|(i, b)| {
-            let x = if i == n - 1 { 83.0 } else { 31.0 + i as f64 * 11.0 };
+            let x = if i == n - 1 {
+                83.0
+            } else {
+                31.0 + i as f64 * 11.0
+            };
             view! { <rect x=x y="2" width="6" height="22" fill=rgb(b.colour) /> }
         })
         .collect_view();
@@ -653,10 +685,14 @@ fn trimmer_svg() -> impl IntoView {
     }
 }
 
-/// The divider schematic; with `trimmer`, R1, P and R2 in a chain with the
-/// output on the wiper.
+/// The divider schematic, with its legs labelled `top` and `bottom`; with
+/// `trimmer`, R1, P and R2 in a chain with the output on the wiper.
 #[component]
-fn DividerDiagram(trimmer: bool) -> impl IntoView {
+fn DividerDiagram(
+    trimmer: bool,
+    #[prop(default = "R1")] top: &'static str,
+    #[prop(default = "R2")] bottom: &'static str,
+) -> impl IntoView {
     if trimmer {
         view! {
             <svg class="diagram" viewBox="0 0 260 56" width="260" height="56">
@@ -685,13 +721,13 @@ fn DividerDiagram(trimmer: bool) -> impl IntoView {
                 <text x="2" y="16">"Vin"</text>
                 <line x1="26" y1="12" x2="54" y2="12" />
                 <rect x="54" y="6" width="34" height="12" />
-                <text class="small" x="71" y="15" text-anchor="middle">"R1"</text>
+                <text class="small" x="71" y="15" text-anchor="middle">{top}</text>
                 <line x1="88" y1="12" x2="144" y2="12" />
                 <circle cx="114" cy="12" r="2.2" class="dot" />
                 <text x="148" y="16">"Vout"</text>
                 <line x1="114" y1="12" x2="114" y2="23" />
                 <rect x="108" y="23" width="12" height="22" />
-                <text class="small" x="124" y="37">"R2"</text>
+                <text class="small" x="124" y="37">{bottom}</text>
                 <line x1="114" y1="45" x2="114" y2="49" />
                 <line x1="108" y1="49" x2="120" y2="49" />
             </svg>
@@ -779,7 +815,11 @@ fn Results(state: State) -> impl IntoView {
 fn StatusBar(state: State) -> impl IntoView {
     let count = move || {
         state.results.with(|r| match r {
-            Ok(rows) => format!("{} result{}", rows.len(), if rows.len() == 1 { "" } else { "s" }),
+            Ok(rows) => format!(
+                "{} result{}",
+                rows.len(),
+                if rows.len() == 1 { "" } else { "s" }
+            ),
             Err(_) => String::new(),
         })
     };
@@ -814,7 +854,10 @@ fn StatusBar(state: State) -> impl IntoView {
 fn About() -> impl IntoView {
     let keys = [
         ("Alt+N / S / P / W / D / T / A", "Switch tab"),
-        ("Alt+6 / 1 / 4 / 8 / 9 / 2", "Toggle E6 / E12 / E24 / E48 / E96 / E192"),
+        (
+            "Alt+6 / 1 / 4 / 8 / 9 / 2",
+            "Toggle E6 / E12 / E24 / E48 / E96 / E192",
+        ),
         ("↑ ↓ PgUp PgDn", "Move through results"),
         ("Ctrl+C, double-click", "Copy selected result"),
     ];

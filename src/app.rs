@@ -67,6 +67,8 @@ pub struct ResCadApp {
     max_err: f64,
     max_err_auto: bool,
     trim_mode: TrimMode,
+    /// The Divider tab searches three-resistor dividers.
+    divider3: bool,
     /// Required adjustment range, ± % of the target.
     trim: f64,
     trim_auto: bool,
@@ -92,6 +94,7 @@ impl Default for ResCadApp {
             max_err: mask.default_tolerance(),
             max_err_auto: true,
             trim_mode: TrimMode::Divider,
+            divider3: false,
             trim: 10.0,
             trim_auto: true,
             selected: Some(0),
@@ -108,6 +111,7 @@ impl ResCadApp {
             (Tab::Series, _) => Mode::Series,
             (Tab::Parallel, _) => Mode::Parallel,
             (Tab::Network, _) => Mode::Network,
+            (Tab::Divider, _) if self.divider3 => Mode::Divider3,
             (Tab::Divider, _) => Mode::Divider,
             (Tab::Trim, TrimMode::Divider) => Mode::TrimDivider,
             (Tab::Trim, TrimMode::Resistor) => Mode::TrimResistor,
@@ -282,16 +286,47 @@ impl ResCadApp {
                 ui.label(RichText::new(hint).weak());
             }
             Tab::Divider => {
+                ui.horizontal(|ui| {
+                    for (three, name, tip) in [
+                        (false, "2 resistors", "R1 on top, R2 at the bottom"),
+                        (
+                            true,
+                            "3 resistors",
+                            "One leg made of two resistors in series or parallel, for more precision",
+                        ),
+                    ] {
+                        let on = self.divider3 == three;
+                        if ui
+                            .add(egui::Button::selectable(on, name))
+                            .on_hover_text(tip)
+                            .clicked()
+                            && !on
+                        {
+                            self.divider3 = three;
+                            self.selected = Some(0);
+                            self.focus_input = true;
+                        }
+                    }
+                });
+                ui.add_space(4.0);
                 first_id = "ratio_num";
                 self.divider_fields(ui);
                 ui.add_space(4.0);
-                divider_diagram(ui, false);
+                divider_diagram(ui, false, self.divider3);
             }
             Tab::Trim => {
                 ui.horizontal(|ui| {
                     for (mode, name, tip) in [
-                        (TrimMode::Divider, "Divider", "R1, trimmer, R2 in a chain, output on the wiper"),
-                        (TrimMode::Resistor, "Resistor", "A trimmer padded with fixed resistors"),
+                        (
+                            TrimMode::Divider,
+                            "Divider",
+                            "R1, trimmer, R2 in a chain, output on the wiper",
+                        ),
+                        (
+                            TrimMode::Resistor,
+                            "Resistor",
+                            "A trimmer padded with fixed resistors",
+                        ),
                     ] {
                         let on = self.trim_mode == mode;
                         if ui
@@ -311,7 +346,7 @@ impl ResCadApp {
                     first_id = "ratio_num";
                     self.divider_fields(ui);
                     ui.add_space(4.0);
-                    divider_diagram(ui, true);
+                    divider_diagram(ui, true, false);
                 } else {
                     first_id = "value";
                     self.value_field(ui);
@@ -415,12 +450,10 @@ impl ResCadApp {
             .show(ui, |ui| {
                 ui.label("Ratio");
                 ui.horizontal(|ui| {
-                    let r =
-                        ui.add(field(&mut self.ratio_num, "ratio_num").desired_width(48.0));
+                    let r = ui.add(field(&mut self.ratio_num, "ratio_num").desired_width(48.0));
                     mark_invalid(ui, &r, units::parse(&self.ratio_num).is_none());
                     ui.label(RichText::new("/").size(16.0));
-                    let r =
-                        ui.add(field(&mut self.ratio_den, "ratio_den").desired_width(48.0));
+                    let r = ui.add(field(&mut self.ratio_den, "ratio_den").desired_width(48.0));
                     mark_invalid(ui, &r, units::parse(&self.ratio_den).is_none());
                 });
                 ui.end_row();
@@ -809,9 +842,9 @@ fn mark_invalid(ui: &egui::Ui, resp: &egui::Response, invalid: bool) {
     }
 }
 
-/// The divider schematic; with `trimmer`, R1, P and R2 in a chain with the
-/// output on the wiper.
-fn divider_diagram(ui: &mut egui::Ui, trimmer: bool) {
+/// The divider schematic, with the legs labelled top and bottom when `three`;
+/// with `trimmer`, R1, P and R2 in a chain with the output on the wiper.
+fn divider_diagram(ui: &mut egui::Ui, trimmer: bool, three: bool) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 70.0), Sense::hover());
     let p = ui.painter();
     let color = ui.visuals().weak_text_color();
@@ -821,7 +854,13 @@ fn divider_diagram(ui: &mut egui::Ui, trimmer: bool) {
     let x0 = rect.left() + 4.0;
     let pos = egui::pos2;
     let label = |r: Rect, text: &str| {
-        p.text(r.center(), Align2::CENTER_CENTER, text, small.clone(), color);
+        p.text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            text,
+            small.clone(),
+            color,
+        );
     };
     let ground = |x: f32, y: f32| {
         p.line_segment([pos(x - 6.0, y), pos(x + 6.0, y)], stroke);
@@ -849,7 +888,10 @@ fn divider_diagram(ui: &mut egui::Ui, trimmer: bool) {
         p.line_segment([pos(wx, pot.top() - 14.0), pos(wx, pot.top())], stroke);
         p.line_segment([pos(wx - 3.0, pot.top() - 4.0), pos(wx, pot.top())], stroke);
         p.line_segment([pos(wx + 3.0, pot.top() - 4.0), pos(wx, pot.top())], stroke);
-        p.line_segment([pos(wx, pot.top() - 14.0), pos(wx + 18.0, pot.top() - 14.0)], stroke);
+        p.line_segment(
+            [pos(wx, pot.top() - 14.0), pos(wx + 18.0, pot.top() - 14.0)],
+            stroke,
+        );
         p.text(
             pos(wx + 22.0, pot.top() - 14.0),
             Align2::LEFT_CENTER,
@@ -867,25 +909,35 @@ fn divider_diagram(ui: &mut egui::Ui, trimmer: bool) {
         let r1 = Rect::from_min_size(pos(x0 + 50.0, y - 6.0), Vec2::new(34.0, 12.0));
         p.line_segment([pos(x0 + 26.0, y), pos(r1.left(), y)], stroke);
         p.rect_stroke(r1, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
-        label(r1, "R1");
+        label(r1, if three { "top" } else { "R1" });
         let node = pos(r1.right() + 26.0, y);
         p.line_segment([pos(r1.right(), y), pos(node.x + 30.0, y)], stroke);
         p.circle_filled(node, 2.2, color);
-        p.text(pos(node.x + 34.0, y), Align2::LEFT_CENTER, "Vout", font.clone(), color);
+        p.text(
+            pos(node.x + 34.0, y),
+            Align2::LEFT_CENTER,
+            "Vout",
+            font.clone(),
+            color,
+        );
         let r2 = Rect::from_center_size(pos(node.x, y + 22.0), Vec2::new(12.0, 22.0));
         p.line_segment([node, pos(node.x, r2.top())], stroke);
         p.rect_stroke(r2, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
         p.text(
             pos(r2.right() + 4.0, r2.center().y),
             Align2::LEFT_CENTER,
-            "R2",
+            if three { "bottom" } else { "R2" },
             small.clone(),
             color,
         );
         let gy = r2.bottom() + 4.0;
         p.line_segment([pos(node.x, r2.bottom()), pos(node.x, gy)], stroke);
         p.line_segment([pos(node.x - 6.0, gy), pos(node.x + 6.0, gy)], stroke);
-        "ratio = R2 / (R1+R2)    RO = R1 || R2"
+        if three {
+            "one leg is a pair:  R+R  or  R||R"
+        } else {
+            "ratio = R2 / (R1+R2)    RO = R1 || R2"
+        }
     };
     p.text(
         pos(rect.left() + 4.0, rect.bottom() - 2.0),

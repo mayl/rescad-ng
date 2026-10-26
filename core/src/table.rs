@@ -13,6 +13,8 @@ pub enum Mode {
     Parallel,
     Network,
     Divider,
+    /// Divider with one leg made of two resistors.
+    Divider3,
     TrimDivider,
     TrimResistor,
 }
@@ -20,7 +22,7 @@ pub enum Mode {
 impl Mode {
     /// True for the modes that take a ratio rather than a single value.
     pub fn is_divider(self) -> bool {
-        matches!(self, Mode::Divider | Mode::TrimDivider)
+        matches!(self, Mode::Divider | Mode::Divider3 | Mode::TrimDivider)
     }
 
     /// True for the trimmer modes, which take a trim range instead of a max error.
@@ -36,6 +38,7 @@ impl Mode {
             Mode::Parallel => "R1 || R2 in parallel",
             Mode::Network => "R1 + (R2 || R3)  or  R1 || (R2 + R3)",
             Mode::Divider => "ratio = R2 / (R1+R2)    RO = R1 || R2",
+            Mode::Divider3 => "R1+R2 / R3,  R1||R2 / R3,  R1 / R2+R3  or  R1 / R2||R3",
             Mode::TrimDivider => "ratio = R2/Rt … (R2+P)/Rt,  Rt = R1+P+R2",
             Mode::TrimResistor => "Rs + P,  Rs + (P || Rp)  or  (Rs + P) || Rp",
         }
@@ -48,6 +51,7 @@ impl Mode {
             Mode::Parallel => &["% err", "R1", "R2", "R1||R2"],
             Mode::Network => &["% err", "R1", "R2", "R3", "Total", "Circuit"],
             Mode::Divider => &["% err", "R1", "R2", "Ratio", "RO"],
+            Mode::Divider3 => &["% err", "R1", "R2", "R3", "Ratio", "RO", "Circuit"],
             Mode::TrimDivider => &["±adj %", "R1", "P", "R2", "Wiper", "RO"],
             Mode::TrimResistor => &["±adj %", "Rs", "P", "Rp", "Wiper", "Circuit"],
         }
@@ -160,6 +164,10 @@ pub fn compute(p: &Params) -> Result<Vec<Row>, String> {
             let (ratio, ro_min, ro_max) = divider_inputs()?;
             calc::divider(p.mask, ratio, ro_min, ro_max, p.max_err).map_err(divider_error)
         }
+        Mode::Divider3 => {
+            let (ratio, ro_min, ro_max) = divider_inputs()?;
+            calc::divider3(p.mask, ratio, ro_min, ro_max, p.max_err).map_err(divider_error)
+        }
         Mode::TrimDivider => {
             let (ratio, ro_min, ro_max) = divider_inputs()?;
             calc::trim_divider(p.mask, ratio, ro_min, ro_max, p.trim).map_err(divider_error)
@@ -199,9 +207,14 @@ pub fn cells(p: &Params, row: &Row) -> Vec<String> {
         }
         (Mode::Series, &[a, b]) => out.push(ohms(a + b)),
         (Mode::Parallel, &[a, b]) => out.push(ohms(a * b / (a + b))),
-        (Mode::Divider, &[a, b]) => {
-            out.push(format!("{:.4}", b / (a + b)));
-            out.push(ohms(a * b / (a + b)));
+        (Mode::Divider | Mode::Divider3, _) => {
+            if let Some((top, bottom)) = row.kind.divider_legs(r) {
+                out.push(format!("{:.5}", bottom / (top + bottom)));
+                out.push(ohms(top * bottom / (top + bottom)));
+            }
+            if p.mode == Mode::Divider3 {
+                out.push(row.kind.circuit().into());
+            }
         }
         _ => {}
     }
@@ -254,6 +267,7 @@ mod tests {
             Mode::Parallel,
             Mode::Network,
             Mode::Divider,
+            Mode::Divider3,
             Mode::TrimDivider,
             Mode::TrimResistor,
         ] {
