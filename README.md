@@ -44,6 +44,7 @@ trimmer's travel. Trimmers come from the usual 1-2-5 values (10R to 2M).
 - Three-resistor networks and dividers, and trimmable dividers and resistors
 - E48 added to the E6, E12, E24, E96 and E192 series. Series can be combined, e.g. E12 + E96.
 - Results are sorted by actual error and colour-coded green, amber or red
+- Multi-part results show a small schematic of each circuit, and the selected one is drawn large with its parts named
 - Extra columns show the combined value (R1+R2, R1‖R2, and the divider's actual ratio and RO)
 - A colour-band preview of the selected resistors: 4-band, or 5-band for 3-digit values
 - An adjustable max-error limit
@@ -133,6 +134,7 @@ Without Nix, a stable Rust toolchain is enough for a native build: `cargo build 
 | `core/src/calc.rs` | The Nearest, Series, Parallel, Network, Divider (2 and 3 resistors) and Trim searches |
 | `core/src/units.rs` | Parsing and formatting of RKM-notation values |
 | `core/src/colour_code.rs` | The colour-band code (IEC 60062) |
+| `core/src/sketch.rs` | Layout of the little circuit schematics, drawn by both front ends |
 | `core/src/table.rs` | Calculator modes, input handling and result formatting, shared by both front ends |
 | `src/app.rs` | The desktop user interface (egui) |
 | `web/src/main.rs`, `web/style.css` | The browser user interface (Leptos) |

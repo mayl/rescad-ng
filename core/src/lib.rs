@@ -3,5 +3,6 @@
 pub mod calc;
 pub mod colour_code;
 pub mod eseries;
+pub mod sketch;
 pub mod table;
 pub mod units;

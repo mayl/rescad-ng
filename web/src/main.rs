@@ -8,6 +8,7 @@ use leptos::prelude::*;
 use rescad_core::calc::{self, Row};
 use rescad_core::colour_code::{self, Band};
 use rescad_core::eseries::SeriesMask;
+use rescad_core::sketch::{self, Shape, Sketch};
 use rescad_core::table::{self, Mode, Params};
 use rescad_core::units;
 use wasm_bindgen::JsCast;
@@ -426,6 +427,15 @@ fn Inputs(state: State) -> impl IntoView {
         }
     };
     let hint = move || state.params.with(|p| p.mode.hint());
+    // The selected row's circuit, drawn large with its parts named.
+    let selected_sketch = move || {
+        let kind = state.results.with(|r| {
+            let rows = r.as_ref().ok()?;
+            Some(rows.get(state.selected.get()?)?.kind)
+        });
+        let sk = sketch::sketch(kind?)?;
+        Some(sketch_svg(&sk, (260.0 / sk.width).min(4.5), true))
+    };
 
     // A pair of chips choosing between two variants of a tab.
     let mode_button =
@@ -461,7 +471,11 @@ fn Inputs(state: State) -> impl IntoView {
             {divider_fields()}
             {move || {
                 if state.divider3.get() {
-                    view! { <DividerDiagram trimmer=false top="top" bottom="bottom" /> }.into_any()
+                    selected_sketch()
+                        .unwrap_or_else(|| {
+                            view! { <DividerDiagram trimmer=false top="top" bottom="bottom" /> }
+                                .into_any()
+                        })
                 } else {
                     view! { <DividerDiagram trimmer=false /> }.into_any()
                 }
@@ -488,12 +502,14 @@ fn Inputs(state: State) -> impl IntoView {
                     }
                 }}
                 <p class="hint">{hint}</p>
+                {selected_sketch}
             }
                 .into_any()
         }
         _ => view! {
             {value_field()}
             <p class="hint">{hint}</p>
+            {selected_sketch}
         }
         .into_any(),
     }
@@ -685,6 +701,88 @@ fn trimmer_svg() -> impl IntoView {
     }
 }
 
+/// `sk` as an SVG, `scale` pixels to the unit; with `labels`, the parts are
+/// named.
+fn sketch_svg(sk: &Sketch, scale: f32, labels: bool) -> AnyView {
+    // A pixel's margin so strokes at the edges aren't clipped.
+    let at = |v: f32| v * scale + 1.0;
+    let r = sketch::DOT_RADIUS * scale;
+    let shapes = sk
+        .shapes
+        .iter()
+        .map(|shape| match *shape {
+            Shape::Line { from, to } => view! {
+                <line x1=at(from.0) y1=at(from.1) x2=at(to.0) y2=at(to.1) />
+            }
+            .into_any(),
+            Shape::Resistor {
+                x,
+                y,
+                w,
+                h,
+                label,
+                trimmer,
+            } => {
+                let arrow = trimmer.then(|| {
+                    let (ax, ay, bx, by) =
+                        (at(x + 1.0), at(y + h + 1.5), at(x + w - 1.0), at(y - 1.5));
+                    let len = ((ax - bx).hypot(ay - by)).max(1e-3);
+                    let (ux, uy) = ((ax - bx) / len * 1.8 * scale, (ay - by) / len * 1.8 * scale);
+                    let head = format!(
+                        "M{},{} L{bx},{by} L{},{}",
+                        bx + ux - uy * 0.5,
+                        by + uy + ux * 0.5,
+                        bx + ux + uy * 0.5,
+                        by + uy - ux * 0.5,
+                    );
+                    view! {
+                        <line x1=ax y1=ay x2=bx y2=by />
+                        <path d=head />
+                    }
+                });
+                let text = labels.then(|| {
+                    let size = (h * scale * 0.6).clamp(9.0, 13.0);
+                    view! {
+                        <text
+                            x=at(x + w / 2.0)
+                            y=at(y + h / 2.0)
+                            font-size=size
+                            text-anchor="middle"
+                            dominant-baseline="central"
+                        >
+                            {label}
+                        </text>
+                    }
+                });
+                view! {
+                    <rect x=at(x) y=at(y) width=w * scale height=h * scale />
+                    {arrow}
+                    {text}
+                }
+                .into_any()
+            }
+            Shape::Dot { x, y } => {
+                view! { <circle class="dot" cx=at(x) cy=at(y) r=r /> }.into_any()
+            }
+            Shape::Terminal { x, y } => view! { <circle cx=at(x) cy=at(y) r=r /> }.into_any(),
+            Shape::Ground { x, y } => [(0.0, 3.0), (1.5, 2.0), (3.0, 1.0)]
+                .into_iter()
+                .map(|(dx, half)| {
+                    view! { <line x1=at(x + dx) y1=at(y - half) x2=at(x + dx) y2=at(y + half) /> }
+                })
+                .collect_view()
+                .into_any(),
+        })
+        .collect_view();
+    let (w, h) = (sk.width * scale + 2.0, sk.height * scale + 2.0);
+    view! {
+        <svg class="sketch" class:large=labels width=w height=h viewBox=format!("0 0 {w} {h}")>
+            {shapes}
+        </svg>
+    }
+    .into_any()
+}
+
 /// The divider schematic, with its legs labelled `top` and `bottom`; with
 /// `trimmer`, R1, P and R2 in a chain with the output on the wiper.
 #[component]
@@ -770,14 +868,15 @@ fn Results(state: State) -> impl IntoView {
                     .into_iter()
                     .enumerate()
                     .map(|(c, cell)| {
-                        let class = if c == 0 {
-                            rating
-                        } else if cols[c] == "Circuit" {
-                            "circuit"
-                        } else {
-                            ""
-                        };
-                        view! { <td class=class>{cell}</td> }
+                        if cols[c] == "Circuit"
+                            && let Some(sk) = sketch::sketch(row.kind)
+                        {
+                            // A little schematic, with the text as a tooltip.
+                            let icon = sketch_svg(&sk, 20.0 / sk.height, false);
+                            return view! { <td class="circuit" title=cell>{icon}</td> }.into_any();
+                        }
+                        let class = if c == 0 { rating } else { "" };
+                        view! { <td class=class>{cell}</td> }.into_any()
                     })
                     .collect_view();
                 view! {

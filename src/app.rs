@@ -8,6 +8,7 @@ use eframe::egui::{
 use rescad_core::calc::{self, Row};
 use rescad_core::colour_code;
 use rescad_core::eseries::SeriesMask;
+use rescad_core::sketch::{self, Shape, Sketch};
 use rescad_core::table::{self, Mode, Params};
 use rescad_core::units;
 
@@ -148,6 +149,35 @@ impl ResCadApp {
         &self.cache.as_ref().unwrap().1
     }
 
+    /// Draws the selected row's circuit large, with its parts named; returns
+    /// false if there is nothing to draw.
+    fn selected_sketch(&mut self, ui: &mut egui::Ui) -> bool {
+        let selected = self.selected;
+        let kind = match self.results() {
+            Ok(rows) => selected.and_then(|i| rows.get(i)).map(|r| r.kind),
+            Err(_) => None,
+        };
+        let Some(sk) = kind.and_then(sketch::sketch) else {
+            return false;
+        };
+        ui.add_space(6.0);
+        let scale = ((ui.available_width() - 8.0) / sk.width).min(4.5);
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), sk.height * scale),
+            Sense::hover(),
+        );
+        let bg = ui.visuals().panel_fill;
+        paint_sketch(
+            ui.painter(),
+            &sk,
+            rect.left_top() + Vec2::new(4.0, 0.0),
+            scale,
+            ui.visuals().weak_text_color(),
+            Some(bg),
+        );
+        true
+    }
+
     fn set_tab(&mut self, tab: Tab) {
         if self.tab != tab {
             self.tab = tab;
@@ -284,6 +314,7 @@ impl ResCadApp {
                 };
                 ui.add_space(4.0);
                 ui.label(RichText::new(hint).weak());
+                self.selected_sketch(ui);
             }
             Tab::Divider => {
                 ui.horizontal(|ui| {
@@ -312,7 +343,9 @@ impl ResCadApp {
                 first_id = "ratio_num";
                 self.divider_fields(ui);
                 ui.add_space(4.0);
-                divider_diagram(ui, false, self.divider3);
+                if !(self.divider3 && self.selected_sketch(ui)) {
+                    divider_diagram(ui, false, self.divider3);
+                }
             }
             Tab::Trim => {
                 ui.horizontal(|ui| {
@@ -352,6 +385,7 @@ impl ResCadApp {
                     self.value_field(ui);
                     ui.add_space(4.0);
                     ui.label(RichText::new("Rs + P,  Rs + (P || Rp)  or  (Rs + P) || Rp").weak());
+                    self.selected_sketch(ui);
                 }
             }
             Tab::About => return,
@@ -551,17 +585,28 @@ impl ResCadApp {
         };
 
         let cols = inputs.mode.columns();
-        let row_h = 20.0;
+        // Rows with a schematic icon need a little more room.
+        let icons = cols.contains(&"Circuit");
+        let row_h = if icons { 24.0 } else { 20.0 };
         let font = FontId::monospace(14.0);
         let width = ui.available_width();
-        let col_w = (width / cols.len() as f32).min(110.0);
+        let weight = |c: &str| if c == "Circuit" { 1.5 } else { 1.0 };
+        let unit = (width / cols.iter().map(|c| weight(c)).sum::<f32>()).min(110.0);
+        // Right-hand edge of each column, text being right-aligned.
+        let col_right: Vec<f32> = cols
+            .iter()
+            .scan(0.0, |x, c| {
+                *x += unit * weight(c);
+                Some(*x - 8.0)
+            })
+            .collect();
 
         // Header.
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, row_h), Sense::hover());
         ui.painter()
             .rect_filled(rect, CornerRadius::same(3), ui.visuals().faint_bg_color);
         for (c, name) in cols.iter().enumerate() {
-            let x = rect.left() + col_w * (c as f32 + 1.0) - 8.0;
+            let x = rect.left() + col_right[c];
             ui.painter().text(
                 egui::pos2(x, rect.center().y),
                 Align2::RIGHT_CENTER,
@@ -625,19 +670,25 @@ impl ResCadApp {
                         rating_colour(table::rating(&inputs, row), visuals.dark_mode)
                     };
                     for (c, cell) in table::cells(&inputs, row).iter().enumerate() {
-                        let x = rect.left() + col_w * (c as f32 + 1.0) - 8.0;
+                        let x = rect.left() + col_right[c];
                         let color = if c == 0 { err_color } else { text_color };
-                        // The circuit description is text, not a number.
-                        let font = if cols[c] == "Circuit" {
-                            FontId::proportional(13.0)
-                        } else {
-                            font.clone()
-                        };
+                        // The circuit is drawn as a little schematic.
+                        if cols[c] == "Circuit"
+                            && let Some(sk) = sketch::sketch(row.kind)
+                        {
+                            let scale = (row_h - 1.0) / sk.height;
+                            let origin = egui::pos2(
+                                x - sk.width * scale,
+                                rect.center().y - sk.height * scale / 2.0,
+                            );
+                            paint_sketch(ui.painter(), &sk, origin, scale, text_color, None);
+                            continue;
+                        }
                         ui.painter().text(
                             egui::pos2(x, rect.center().y),
                             Align2::RIGHT_CENTER,
                             cell,
-                            font,
+                            font.clone(),
                             color,
                         );
                     }
@@ -946,6 +997,74 @@ fn divider_diagram(ui: &mut egui::Ui, trimmer: bool, three: bool) {
         FontId::proportional(11.0),
         color,
     );
+}
+
+/// Draws `sk` with its top-left corner at `origin`, `scale` pixels to the
+/// unit.  With `labels`, the background colour, the parts are named.
+fn paint_sketch(
+    p: &egui::Painter,
+    sk: &Sketch,
+    origin: egui::Pos2,
+    scale: f32,
+    color: Color32,
+    labels: Option<Color32>,
+) {
+    let at = |x: f32, y: f32| origin + Vec2::new(x, y) * scale;
+    let stroke = Stroke::new(if labels.is_some() { 1.3 } else { 1.0 }, color);
+    let r = sketch::DOT_RADIUS * scale;
+    for shape in &sk.shapes {
+        match *shape {
+            Shape::Line { from, to } => {
+                p.line_segment([at(from.0, from.1), at(to.0, to.1)], stroke);
+            }
+            Shape::Resistor {
+                x,
+                y,
+                w,
+                h,
+                label,
+                trimmer,
+            } => {
+                let body = Rect::from_min_max(at(x, y), at(x + w, y + h));
+                if let Some(bg) = labels {
+                    p.rect_filled(body, CornerRadius::ZERO, bg);
+                }
+                p.rect_stroke(body, CornerRadius::ZERO, stroke, egui::StrokeKind::Middle);
+                if trimmer {
+                    let (a, b) = (at(x + 1.0, y + h + 1.5), at(x + w - 1.0, y - 1.5));
+                    p.line_segment([a, b], stroke);
+                    let back = (a - b).normalized() * 1.8 * scale;
+                    let side = Vec2::new(-back.y, back.x) * 0.5;
+                    p.line_segment([b, b + back + side], stroke);
+                    p.line_segment([b, b + back - side], stroke);
+                }
+                if let Some(bg) = labels {
+                    let font = FontId::proportional((h * scale * 0.6).clamp(9.0, 13.0));
+                    let galley = p.layout_no_wrap(label.into(), font, color);
+                    let pos = body.center() - galley.size() / 2.0;
+                    if trimmer {
+                        p.rect_filled(
+                            Rect::from_min_size(pos, galley.size()).expand(1.0),
+                            CornerRadius::ZERO,
+                            bg,
+                        );
+                    }
+                    p.galley(pos, galley, color);
+                }
+            }
+            Shape::Dot { x, y } => {
+                p.circle_filled(at(x, y), r, color);
+            }
+            Shape::Terminal { x, y } => {
+                p.circle_stroke(at(x, y), r, stroke);
+            }
+            Shape::Ground { x, y } => {
+                for (dx, half) in [(0.0, 3.0), (1.5, 2.0), (3.0, 1.0)] {
+                    p.line_segment([at(x + dx, y - half), at(x + dx, y + half)], stroke);
+                }
+            }
+        }
+    }
 }
 
 /// A trimmer: a square body with an adjustment slot.
